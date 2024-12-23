@@ -2,6 +2,7 @@ package com.example.pj4combined.cameraView
 
 import android.content.Context
 import android.graphics.Bitmap
+import android.os.Environment
 import android.util.Log
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.ImageAnalysis
@@ -33,6 +34,7 @@ import com.example.pj4combined.cameraInference.DetectorListener
 import com.example.pj4combined.cameraInference.PersonClassifier
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import java.io.File
 import java.util.concurrent.Executors
 import kotlin.coroutines.resume
 import kotlin.coroutines.suspendCoroutine
@@ -43,7 +45,7 @@ private lateinit var bitmapBuffer: Bitmap
 
 
 @Composable
-fun CameraScreen() {
+fun CameraScreenWithLatencyLogging() {
     // Obtain the current context and lifecycle owner
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
@@ -59,20 +61,23 @@ fun CameraScreen() {
 
     // Initialize our background executor
     val cameraExecutor = remember { Executors.newSingleThreadExecutor() }
-
-    val resolutionSelector =  ResolutionSelector.Builder().setAspectRatioStrategy(AspectRatioStrategy.RATIO_4_3_FALLBACK_AUTO_STRATEGY).build()
+    val resolutionSelector = ResolutionSelector.Builder()
+        .setAspectRatioStrategy(AspectRatioStrategy.RATIO_4_3_FALLBACK_AUTO_STRATEGY).build()
     val preview = remember { Preview.Builder().setResolutionSelector(resolutionSelector).build() }
-    val imageAnalyzer = remember {ImageAnalysis.Builder()
+    val imageAnalyzer = remember {
+        ImageAnalysis.Builder()
             .setResolutionSelector(resolutionSelector)
             .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
             .setOutputImageFormat(OUTPUT_IMAGE_FORMAT_RGBA_8888)
-            .build() }
-
+            .build()
+    }
 
     val previewView = remember { PreviewView(context) }
 
-    LaunchedEffect(Unit) {
+    // Latency data storage
+    val latencyData = remember { mutableListOf<Long>() }
 
+    LaunchedEffect(Unit) {
         val personClassifierGPU = PersonClassifier()
         withContext(Dispatchers.IO) {
             personClassifierGPU.initialize(context, useGPU = true)
@@ -84,7 +89,6 @@ fun CameraScreen() {
         // The analyzer can then be assigned to the instance
         imageAnalyzer.setAnalyzer(cameraExecutor) { image ->
             detectObjects(image, personClassifierGPU)
-            // Close the image proxy
             image.close()
         }
 
@@ -102,36 +106,51 @@ fun CameraScreen() {
     }
 
     if (detectionResults.value != null) {
-        // TODO:
-        //  Choose your inference time threshold
-        val inferenceTimeThreshold = 200000
+        val currentInferenceTime = detectionResults.value!!.inferenceTime
 
-        if (detectionResults.value!!.inferenceTime > inferenceTimeThreshold) {
-            Log.d("CS330", "GPU too slow, switching to CPU start")
-            // TODO:
-            //  Create new classifier to be run on CPU with 2 threads
+        // Log the inference time
+        latencyData.add(currentInferenceTime)
+        Log.d("InferenceLatency", "Timestamp: ${System.currentTimeMillis()}, Inference time: $currentInferenceTime ms")
 
-            // TODO:
-            //  Set imageAnalyzer to use the new classifier
+        // Threshold-based GPU to CPU switch
+        val inferenceTimeThreshold = 1000 // in milliseconds
+        if (currentInferenceTime > inferenceTimeThreshold) {
+            Log.d(
+                "CS330",
+                "GPU too slow: inference time (${currentInferenceTime} ms) exceeds threshold ($inferenceTimeThreshold ms). Switching to CPU start"
+            )
+            val personClassifierCPU = PersonClassifier()
+            personClassifierCPU.initialize(context, useGPU = false)
+            personClassifierCPU.setDetectorListener(listener)
 
-            Log.d("CS330", "GPU too slow, switching to CPU done")
+            imageAnalyzer.setAnalyzer(cameraExecutor) { image ->
+                detectObjects(image, personClassifierCPU)
+                image.close()
+            }
+
+            Log.d("CS330", "Switch to CPU completed for inference time (${currentInferenceTime} ms)")
         }
     }
 
+    if (latencyData.isNotEmpty()) {
+        val averageLatency = latencyData.average()
+        Log.d("InferenceLatency", "Average inference time: $averageLatency ms")
+    }
+
     // Display the Camera Preview
-    ShowCameraPreview( previewView )
+    ShowCameraPreview(previewView)
     Text(buildAnnotatedString {
-            if (detectionResults.value != null) {
-                val detectionResult = detectionResults.value!!
-                withStyle(style = SpanStyle(color = Color.Blue, fontSize = 20.sp)) {
-                    append("inference time ${detectionResult.inferenceTime}\n")
-                }
-                if (detectionResult.detections.find { it.categories[0].label == "person" } != null) {
-                    withStyle(style = SpanStyle(color = Color.Red, fontSize = 40.sp)) {
-                        append("human detected")
-                    }
+        if (detectionResults.value != null) {
+            val detectionResult = detectionResults.value!!
+            withStyle(style = SpanStyle(color = Color.Blue, fontSize = 20.sp)) {
+                append("inference time ${detectionResult.inferenceTime}\n")
+            }
+            if (detectionResult.detections.find { it.categories[0].label == "person" } != null) {
+                withStyle(style = SpanStyle(color = Color.Red, fontSize = 40.sp)) {
+                    append("human detected")
                 }
             }
+        }
     })
 }
 
@@ -145,19 +164,14 @@ fun ShowCameraPreview(previewView: PreviewView) {
 
 fun detectObjects(image: ImageProxy, personClassifier: PersonClassifier) {
     if (!::bitmapBuffer.isInitialized) {
-        // The image rotation and RGB image buffer are initialized only once
-        // the analyzer has started running
         bitmapBuffer = Bitmap.createBitmap(
             image.width,
             image.height,
             Bitmap.Config.ARGB_8888
         )
     }
-    // Copy out RGB bits to the shared bitmap buffer
     image.use { bitmapBuffer.copyPixelsFromBuffer(image.planes[0].buffer) }
     val imageRotation = image.imageInfo.rotationDegrees
-
-    // Pass Bitmap and rotation to the object detector helper for processing and detection
     personClassifier.detect(bitmapBuffer, imageRotation)
 }
 

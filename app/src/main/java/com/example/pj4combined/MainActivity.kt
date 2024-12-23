@@ -37,7 +37,7 @@ import androidx.core.content.ContextCompat
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
-import com.example.pj4combined.cameraView.CameraScreen
+import com.example.pj4combined.cameraView.CameraScreenWithLatencyLogging
 import com.example.pj4combined.chatView.ChatRoute
 import com.example.pj4combined.chatView.LoadingRoute
 import com.example.pj4combined.ui.theme.PJ4COMBINEDTheme
@@ -92,7 +92,7 @@ class MainActivity : ComponentActivity() {
                             if (startPreview.value) {
                                 // Check Permission
                                 handleCameraPermission()
-                                CameraScreen()
+                                CameraScreenWithLatencyLogging()
                             } else {
                                 Button(
                                     onClick = {startPreview.value = true},modifier = Modifier.align(Alignment.Center)) {
